@@ -11,6 +11,7 @@ import hashlib
 import json
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 import pytest
@@ -195,6 +196,79 @@ def test_partial_download_by_name(tmp_path):
     stored = srv.job().download(tmp_path, names=["grid.mp4"])
     assert [f.name for f in stored.files] == ["grid.mp4"] and stored.complete is False
     assert ResultStore(tmp_path).get(JOB_ID).stored is False
+
+
+def test_partial_downloads_accumulate_verified_inventory(tmp_path: Path) -> None:
+    """Separate downloads remain discoverable after reopening the result store."""
+    srv = FakeServer()
+    job = srv.job()
+    downloaded: set[str] = set()
+    seen: list[tuple[str, int, int]] = []
+    for name in srv.files:
+        seen.clear()
+        stored = job.download(tmp_path, names=[name], viewer_video=False,
+                              progress=lambda filename, index, total: seen.append((filename, index, total)))
+        downloaded.add(name)
+        assert {file.name for file in stored.files} == downloaded
+        assert stored.complete == (downloaded == set(srv.files))
+        assert seen == [(name, 1, 1)]
+        store = ResultStore(tmp_path)
+        assert store.load(JOB_ID) == stored
+        assert store.get(JOB_ID).files == len(downloaded)
+        assert store.get(JOB_ID).stored == stored.complete
+    assert len(srv.downloads()) == len(srv.files)
+
+
+@pytest.mark.parametrize("names", [["grid.mp4"], []])
+def test_selected_download_keeps_a_complete_local_copy(tmp_path: Path, names: list[str]) -> None:
+    """Restricting transfers does not hide files already stored and verified."""
+    srv = FakeServer()
+    job = srv.job()
+    complete = job.download(tmp_path, viewer_video=False)
+    stored = job.download(tmp_path, names=names, viewer_video=False)
+    assert stored.files == complete.files
+    assert stored.complete is True
+    assert len(srv.downloads()) == len(srv.files)
+    entry = ResultStore(tmp_path).get(JOB_ID)
+    assert entry.stored is True and entry.files == len(srv.files) and entry.bytes == complete.bytes
+
+
+@pytest.mark.parametrize("damage", ["missing", "checksum"])
+def test_selected_download_excludes_damaged_unselected_files(tmp_path: Path, damage: str) -> None:
+    """Unselected damage is reported accurately without starting extra transfers."""
+    srv = FakeServer()
+    job = srv.job()
+    complete = job.download(tmp_path, viewer_video=False)
+    damaged = complete.path / "control_depth.mp4"
+    if damage == "missing":
+        damaged.unlink()
+    else:
+        damaged.write_bytes(b"!" * damaged.stat().st_size)
+    stored = job.download(tmp_path, names=["grid.mp4"], viewer_video=False)
+    assert {file.name for file in stored.files} == set(srv.files) - {damaged.name}
+    assert stored.complete is False
+    assert len(srv.downloads()) == len(srv.files), "unselected files must not be re-downloaded"
+    store = ResultStore(tmp_path)
+    entry = store.get(JOB_ID)
+    assert entry.stored is False and entry.files == 3 and entry.bytes == stored.bytes
+    assert store.load(JOB_ID) == stored
+    store.note_submitted(job, clip_id=CLIP_ID)
+    assert store.get(JOB_ID).files == entry.files
+    assert store.get(JOB_ID).bytes == entry.bytes
+
+
+def test_empty_download_inventory_clears_index_counts(tmp_path: Path) -> None:
+    """The index can replace a stale complete copy with an empty local snapshot."""
+    srv = FakeServer()
+    job = srv.job()
+    complete = job.download(tmp_path, viewer_video=False)
+    for file in complete.files:
+        (complete.path / file.name).unlink()
+    stored = job.download(tmp_path, names=[], viewer_video=False)
+    assert stored.files == [] and stored.complete is False
+    entry = ResultStore(tmp_path).get(JOB_ID)
+    assert entry.files == 0 and entry.bytes == 0 and entry.stored is False
+    assert len(srv.downloads()) == len(srv.files)
 
 
 def test_download_of_a_failed_job_raises(tmp_path):

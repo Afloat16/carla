@@ -231,8 +231,6 @@ class ResultStore:
         dest.mkdir(parents=True, exist_ok=True)
         wanted = set(names) if names is not None else None
         selected = [f for f in manifest.files if wanted is None or f.name in wanted]
-        stored: list[StoredFile] = []
-        complete = wanted is None
         for i, f in enumerate(selected, 1):
             path = dest / _safe_name(f.name)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -250,9 +248,15 @@ class ResultStore:
                     raise CosmosError(0, f"{f.name}: sha256 differs from the server's listing")
                 os.replace(tmp, path)
                 log.info("stored %s (%.1f MB)", path, f.size / 1e6)
-            stored.append(StoredFile(name=f.name, size=f.size, sha256=f.sha256, kind=f.kind, view=f.view))
             if progress:
                 progress(f.name, i, len(selected))
+        # names limits network transfers, not the inventory of this job's local
+        # files. Keep earlier subsets only when they still match this manifest.
+        selected_names = {f.name for f in selected}
+        stored = [StoredFile(name=f.name, size=f.size, sha256=f.sha256, kind=f.kind, view=f.view)
+                  for f in manifest.files
+                  if f.name in selected_names or _on_disk(dest / _safe_name(f.name), f.size, f.sha256, verify)]
+        complete = len(stored) == len(manifest.files)
         (dest / MANIFEST_JSON).write_text(manifest.model_dump_json(indent=2))
         viewer = self.write_viewer_video(dest, manifest, clip=clip, enabled=viewer_video)
         if viewer is not None:
@@ -320,12 +324,14 @@ class ResultStore:
         return self.upsert(entry)
 
     def upsert(self, entry: IndexEntry) -> IndexEntry:
-        """Merge one entry into ``index.json`` (kept only-grows-more-accurate)."""
+        """Merge submission information; a download's local inventory is authoritative."""
         entries = {e.job_id: e for e in self.index()}
         old = entries.get(entry.job_id)
         if old is not None:
             merged = old.model_dump()
             merged.update({k: v for k, v in entry.model_dump().items() if v not in (None, "", 0, False)})
+            if entry.directory is not None:
+                merged.update(stored=entry.stored, files=entry.files, bytes=entry.bytes)
             entry = IndexEntry.model_validate(merged)
         entries[entry.job_id] = entry
         self._write_index(entries.values())
