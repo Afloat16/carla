@@ -167,11 +167,13 @@ class _Server:
     async def _run(self, rid: int, job: dict[str, Any], send) -> None:
         job_id = job.get("job_id", "?")
         with self.worker._lock:
-            if self.worker.state != "ready":
-                await send({"id": rid, "event": "failed",
-                            "error": f"worker is '{self.worker.state}', cannot run {job_id}"})
-                return
-            self.worker.state = "busy"
+            unavailable = self.worker.state if self.worker.state != "ready" else None
+            if unavailable is None:
+                self.worker.state = "busy"
+        if unavailable is not None:
+            await send({"id": rid, "event": "failed",
+                        "error": f"worker is '{unavailable}', cannot run {job_id}"})
+            return
         queue: asyncio.Queue[tuple[float, str] | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
@@ -180,7 +182,45 @@ class _Server:
 
         ctx = RunContext(job_id=job_id, _report=report)
         self.worker.current = ctx
-        task = asyncio.create_task(asyncio.to_thread(self.worker.run, job, ctx))
+        started = False
+
+        def release() -> None:
+            with self.worker._lock:
+                if self.worker.current is ctx:
+                    self.worker.current = None
+                    if self.worker.state == "busy":
+                        self.worker.state = "ready"
+
+        def run_owned() -> RunResult:
+            nonlocal started
+            with self.worker._lock:
+                started = True
+            try:
+                ctx.check_cancelled()
+                return self.worker.run(job, ctx)
+            finally:
+                # A failed socket write or cancelled handler does not stop the
+                # model thread. Only that thread may make the worker reusable.
+                release()
+
+        def completed(done: asyncio.Task) -> None:
+            with self.worker._lock:
+                never_started = not started
+                if never_started:
+                    ctx._cancel.set()
+            # Submission can fail, or an executor can discard a queued call.
+            # Mark it cancelled before releasing so a late thread cannot enter
+            # the model; release() cannot clear a later job's ownership.
+            if never_started:
+                release()
+            if not done.cancelled():
+                done.exception()
+
+        task = asyncio.create_task(asyncio.to_thread(run_owned))
+        # The request can disappear before the model returns. Retrieve any late
+        # exception even when there is no longer a connected caller to report it to.
+        task.add_done_callback(completed)
+        getter = None
         try:
             while True:
                 getter = asyncio.create_task(queue.get())
@@ -209,10 +249,10 @@ class _Server:
                     await send({"id": rid, "event": "done", "files": result.files, "manifest": result.manifest})
                 return
         finally:
-            self.worker.current = None
-            with self.worker._lock:
-                if self.worker.state == "busy":
-                    self.worker.state = "ready"
+            if getter is not None and not getter.done():
+                getter.cancel()
+            if not task.done():
+                ctx._cancel.set()
 
     async def serve_forever(self) -> None:
         if os.path.exists(self.path):

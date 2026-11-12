@@ -143,6 +143,8 @@
 
 ### Bug fixes
 
+* Kept Cosmos workers busy until their model thread actually finishes after a request disconnects or is cancelled, preventing overlapping inference on the same worker.
+
 #### Sensors
 
 * Fixed every native sensor (LiDAR, radar, IMU, cameras) simulating only the last physics substep instead of the true elapsed time when `sensor_tick` spanned more than one substep, which halved LiDAR's swept angle and skewed IMU and radar readings.
