@@ -139,8 +139,11 @@ class Scheduler:
         return bool(self.renderers())
 
     def gpu_free(self, worker: WorkerHandle) -> bool:
-        """No job is running on a *model* worker that shares a GPU with ``worker`` (renderers exempt)."""
-        return not any(other.current_job is not None and other.shares_gpu_with(worker)
+        """No admitted job owns this worker or a shared model GPU (renderers exempt)."""
+        reserved = {id(active) for active, _ in self._running.values()}
+        if id(worker) in reserved:
+            return False
+        return not any((other.current_job is not None or id(other) in reserved) and other.shares_gpu_with(worker)
                        and self.RENDERER_BACKEND not in other.backends and self.RENDERER_BACKEND not in worker.backends
                        for other in self.workers)
 
