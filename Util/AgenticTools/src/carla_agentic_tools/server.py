@@ -411,7 +411,7 @@ def set_config(paths: dict[str, str]) -> str:
     their flavor and branch and let them choose, because several checkouts of
     different branches on one machine is normal and the wrong one fails slowly.
     """
-    updates: dict[str, str] = {}
+    updates: dict[str, str] = dict.fromkeys(_cfg.DERIVED_KEYS, "") if "CARLA_ROOT" in paths else {}
     notes: list[str] = []
     for key, raw in paths.items():
         if key not in _cfg.CONFIG_KEYS and key not in _cfg.DERIVED_KEYS:

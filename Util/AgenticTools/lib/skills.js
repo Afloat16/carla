@@ -270,7 +270,8 @@ function getConfig() {
 }
 
 function setConfig(paths) {
-  const updates = {};
+  const updates = Object.hasOwn(paths || {}, "CARLA_ROOT")
+    ? Object.fromEntries(cfg.DERIVED_KEYS.map((key) => [key, ""])) : {};
   const notes = [];
   for (const [key, raw] of Object.entries(paths || {})) {
     if (!(key in cfg.CONFIG_KEYS) && !cfg.DERIVED_KEYS.includes(key)) {

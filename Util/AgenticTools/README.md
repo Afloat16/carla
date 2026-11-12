@@ -269,6 +269,9 @@ set_config({"CARLA_ROOT": "/home/me/carla"})
 
 That is what gates the `ue58` group — the flavor comes from structural markers in
 the tree, not from which of the five variable names you happened to set.
+Changing or clearing `CARLA_ROOT` also replaces its persisted derived variables,
+so aliases for the previously selected checkout or release do not remain active.
+Other configured tools and explicit environment overrides keep their values.
 
 Resolution order for every key, highest first:
 
