@@ -13,7 +13,6 @@
 #include <fastcdr/Cdr.h>
 
 #include <cstdint>
-#include <cstring>
 #include <functional>
 
 namespace carla {
@@ -49,18 +48,20 @@ class GenericCdrPubSubType : public eprosima::fastdds::dds::TopicDataType {
 
   /// Serialize a MsgType instance into the FastDDS payload buffer.
   /// Called by FastDDS DataWriter::write() before sending on the wire.
-  /// Serializes into an auto-growing heap buffer first so variable-length
-  /// fields (e.g. Image::data, PointCloud2::data) are not bounded by the
-  /// pre-allocated payload->data size. The bytes are then memcpy'd across.
-  /// FastDDS resizes payload->data before this call via getSerializedSizeProvider,
-  /// so the copy will always fit for correctly sized messages.
+  /// FastDDS sizes payload->data via getSerializedSizeProvider before this call,
+  /// including variable-length Image::data and PointCloud2::data. Write into
+  /// that buffer directly to avoid another allocation and full-payload copy.
   bool serialize(
       void* data,
       SerializedPayload_t* payload) override {
     const MsgType* msg = static_cast<const MsgType*>(data);
 
-    // Auto-growing FastBuffer: no fixed-size ceiling, handles any payload.
-    eprosima::fastcdr::FastBuffer fb;
+    if (payload->data == nullptr || payload->max_size < 4u) {
+      return false;
+    }
+    eprosima::fastcdr::FastBuffer fb(
+        reinterpret_cast<char*>(payload->data),
+        static_cast<size_t>(payload->max_size));
     // Force LITTLE_ENDIANNESS so the encapsulation header is CDR_LE
     // ({0x00, 0x01}) per DDSI-RTPS v2.5 Table 10.3, regardless of host
     // endianness. ROS2 ecosystems test against CDR_LE.
@@ -77,12 +78,7 @@ class GenericCdrPubSubType : public eprosima::fastdds::dds::TopicDataType {
       return false;
     }
 
-    const uint32_t len = static_cast<uint32_t>(ser.get_serialized_data_length());
-    if (len > payload->max_size) {
-      return false;
-    }
-    std::memcpy(payload->data, fb.getBuffer(), len);
-    payload->length = len;
+    payload->length = static_cast<uint32_t>(ser.get_serialized_data_length());
     return true;
   }
 
