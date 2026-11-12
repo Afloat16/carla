@@ -221,8 +221,10 @@ class Scheduler:
             else:
                 self._fail(job, f"run on {worker.name}", outcome.error, timings, outcome.traceback)
         except asyncio.CancelledError:
-            self.store.set_status(job.id, "failed", error="server shutting down", timings=timings,
-                                  message="failed: server shutting down")
+            fresh = self.store.get_job(job.id)
+            if fresh is not None and fresh.status != "cancelled":
+                self.store.set_status(job.id, "failed", error="server shutting down", timings=timings,
+                                      message="failed: server shutting down")
             raise
         except Exception as exc:  # noqa: BLE001 - never let a job kill the loop
             log.exception("job %s crashed the dispatcher", job.id)
@@ -235,6 +237,11 @@ class Scheduler:
     def _fail(self, job: JobRecord, phase: str, error: str | None, timings: dict[str, float],
               detail: str | None = None) -> None:
         """Mark ``job`` failed with the worker's error in ``message`` and the full text in ``error``."""
+        # Preparation/rendering may finish after cancel() has accepted the job.
+        # Its late failure must not replace that terminal decision or expiry time.
+        fresh = self.store.get_job(job.id)
+        if fresh is None or fresh.status == "cancelled":
+            return
         message, text = failure_text(phase, error, detail)
         self.store.set_status(job.id, "failed", error=text, timings=timings, message=message)
         log.warning("job %s %s", job.id, message)

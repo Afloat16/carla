@@ -143,6 +143,8 @@
 
 ### Bug fixes
 
+* Kept accepted Cosmos preparation cancellations terminal when a late input/rendering failure or server shutdown completes, preserving their cancellation reason and expiry time.
+
 #### Sensors
 
 * Fixed every native sensor (LiDAR, radar, IMU, cameras) simulating only the last physics substep instead of the true elapsed time when `sensor_tick` spanned more than one substep, which halved LiDAR's swept angle and skewed IMU and radar readings.
